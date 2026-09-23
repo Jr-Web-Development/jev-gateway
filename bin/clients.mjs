@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { NOT_ROUTED_LINE, ROUTED_PROVIDER } from "./omp-provider.mjs";
 
 /** Codex talks to a different backend depending on how the user logged in. */
 function codexUpstream() {
@@ -258,6 +260,43 @@ export const opencode = {
     );
   },
 };
+
+const OMP_PROVIDER_EXTENSION = fileURLToPath(new URL("./omp-provider.mjs", import.meta.url));
+
+/**
+ * jev-omp routes exactly one OMP provider. The gateway this launcher starts has a single fixed
+ * upstream — the OpenCode Go API — so `--stop` is only ever needed when the running gateway
+ * forwards somewhere else.
+ */
+export const omp = {
+  name: "jev-omp",
+  client: "omp",
+  portEnv: "JEV_OMP_PORT",
+  defaultPort: 8792,
+  upstream: () => process.env.JEV_OMP_UPSTREAM_BASE_URL ?? "https://opencode.ai/zen/go/v1",
+  upstreamHelp:
+    "JEV_OMP_UPSTREAM_BASE_URL   where routed OMP traffic goes (default https://opencode.ai/zen/go/v1)",
+  // OMP's explicit extension flag is process-local and still works with --no-extensions.
+  // The extension re-points the opencode-go provider at this gateway and nothing else.
+  args: () => ["--extension", OMP_PROVIDER_EXTENSION],
+  env: (origin) => ({
+    JEV_OMP_GATEWAY_BASE_URL: `${origin}/v1`,
+  }),
+  // `--model` is the only place the provider is knowable before OMP starts. A model that resolves
+  // to another provider from the user's own config is announced by the extension instead, which
+  // sees the session's real selection.
+  notices: async (_origin, argv) => {
+    const selected = modelFlag(argv);
+    const provider = selected === undefined ? undefined : providerOf(selected);
+    return provider === undefined || provider === ROUTED_PROVIDER ? [] : [NOT_ROUTED_LINE];
+  },
+  configHelp: (origin) =>
+    `# jev-omp routes only OMP's opencode-go provider through the gateway; every other\n` +
+    `# provider keeps its own upstream. Keep the gateway running first: jev-omp --start\n` +
+    `# Then, to wire plain omp the same way, load the same process-local extension:\n` +
+    `JEV_OMP_GATEWAY_BASE_URL=${origin}/v1 omp --extension "${OMP_PROVIDER_EXTENSION}"\n`,
+};
+
 export const gemini = {
   name: "jev-gemini",
   client: "gemini",
