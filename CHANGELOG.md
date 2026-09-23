@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/vinilana/jev-gateway/compare/v0.4.2...v0.4.3) (2026-09-23)
+
+
+### Fixed
+
+* pass Codex subagent requests through instead of taking their tools away ([576d89f](https://github.com/vinilana/jev-gateway/commit/576d89f770b4e6397b389fdd1de46665d8fc5f98))
+* pass requests through when a Jev error page cannot fit in a header ([0eab07b](https://github.com/vinilana/jev-gateway/commit/0eab07bdc70239c12b6cb71e3ff94cb9b8892915))
+
 ## [0.4.2](https://github.com/vinilana/jev-gateway/compare/v0.4.1...v0.4.2) (2026-09-23)
 
 
