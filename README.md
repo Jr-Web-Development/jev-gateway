@@ -5,9 +5,10 @@ the gateway asks [Jev](https://docs.typesafe.ai/introduction), TypeSafe's fast d
 instead of leaving that choice to the expensive reasoning model. Everything else goes to your usual
 LLM untouched.
 
-It works with **Codex**, **Claude Code** and **OpenCode** out of the box, including on ChatGPT and
-claude.ai subscriptions, with Gemini API clients, and with any client that speaks the OpenAI,
-Anthropic or Google Gemini APIs.
+It works with **Codex**, **Claude Code**, **OpenCode** and **Oh My Pi** out of the box, including on
+ChatGPT and claude.ai subscriptions, with Gemini API clients, and with any client that speaks the
+OpenAI, Anthropic or Google Gemini APIs. For Oh My Pi, the gateway covers OMP's `opencode-go`
+provider only: models on OMP's other providers stay direct.
 
 > Independent project, not affiliated with or endorsed by TypeSafe. "Jev" is TypeSafe's model and
 > this gateway is a client of its public API.
@@ -30,6 +31,7 @@ npm install -g jev-gateway
 jev-codex      # use it exactly like `codex`
 jev-claude     # use it exactly like `claude`
 jev-opencode   # use it exactly like `opencode` (stable v1)
+jev-omp        # use it exactly like `omp`; only its opencode-go provider is rerouted
 jev-gemini     # Gemini CLI, with a Gemini API key
 ```
 
@@ -55,8 +57,8 @@ The key works (Jev answered in 712 ms).
 jev-codex --dashboard
 ```
 
-That's it. Your existing login keeps working, nothing in `~/.codex`, `~/.claude`, or
-`~/.config/opencode` is changed, and plain `codex`, `claude`, and `opencode` still behave as
+That's it. Your existing login keeps working, nothing in `~/.codex`, `~/.claude`, `~/.config/opencode`
+or `~/.omp` is changed, and plain `codex`, `claude`, `opencode`, and `omp` still behave as
 before. Only sessions started with the `jev-` commands go through the gateway.
 
 ## What to expect
@@ -74,7 +76,7 @@ before. Only sessions started with the `jev-` commands go through the gateway.
 
 ## Commands
 
-All of these work with `jev-codex`, `jev-claude`, `jev-opencode` and `jev-gemini`.
+All of these work with `jev-codex`, `jev-claude`, `jev-opencode`, `jev-omp` and `jev-gemini`.
 
 | Command | What it does |
 | --- | --- |
@@ -90,17 +92,17 @@ All of these work with `jev-codex`, `jev-claude`, `jev-opencode` and `jev-gemini
 | `jev-codex --print-config` | Print settings to point plain `codex` at the gateway permanently |
 | `jev-codex --gateway-help` | List all of the above |
 
-Codex uses port 8790, Claude Code 8789, OpenCode 8791 and Gemini clients 8788. Change them with
-`JEV_CODEX_PORT`, `JEV_CLAUDE_PORT`, `JEV_OPENCODE_PORT` and `JEV_GEMINI_PORT`.
+Codex uses port 8790, Claude Code 8789, OpenCode 8791, Oh My Pi 8792 and Gemini clients 8788. Change
+them with `JEV_CODEX_PORT`, `JEV_CLAUDE_PORT`, `JEV_OPENCODE_PORT`, `JEV_OMP_PORT` and `JEV_GEMINI_PORT`.
 
 ## Dashboard
 
 ```bash
-jev-codex --dashboard     # or: jev-claude --dashboard, jev-opencode --dashboard
+jev-codex --dashboard     # or: jev-claude --dashboard, jev-opencode --dashboard, jev-omp --dashboard
 ```
 
 This opens `http://localhost:8790/dashboard`. If no browser window appears, paste that address into
-your browser. One page shows each gateway (Codex, Claude, and OpenCode) and refreshes every
+your browser. One page shows each gateway (Codex, Claude, OpenCode, and Oh My Pi) and refreshes every
 2 seconds.
 
 To find the other gateways, the page tries their default ports. A port that never answered is
@@ -355,6 +357,154 @@ with fixed choices rather than everyday file and shell tools.
 The launcher sets `OPENCODE_EXPERIMENTAL_NATIVE_LLM=false` and
 `OPENCODE_EXPERIMENTAL_CODE_MODE=false` for the launched process only. Those experimental modes
 are outside the supported path; the stable AI SDK provider above is the supported one.
+
+## Using it with Oh My Pi (OMP)
+
+`jev-omp` runs `omp` with a bundled extension loaded only for that process
+(`--extension <jev-gateway>/bin/omp-provider.mjs`), and starts or reuses a gateway on port 8792.
+**Validated against OMP 18.2.11.** Neither the launcher nor the extension writes or replaces
+anything in `~/.omp`: models, credentials, roles, and every other setting stay as they are, and no
+`~/.omp` provider definition is ever edited. (OMP itself still stores its session transcripts under
+`~/.omp/agent/sessions`, exactly as it does for a plain `omp` run.)
+
+`jev-omp` routes only OMP's `opencode-go` provider. Models on other OMP providers remain direct and
+do not use the Jev gateway.
+
+### Exactly one provider goes through the gateway
+
+```text
+opencode-go/*          -> 127.0.0.1:8792 -> https://opencode.ai/zen/go/v1   (fixed upstream)
+openai-codex/*         -> direct
+google-antigravity/*   -> direct
+openrouter/*           -> direct
+anthropic/*            -> direct
+any other provider     -> direct
+```
+
+The model inside `opencode-go` varies normally — `deepseek-v4.1-flash`, `kimi-k2.7-code`, the
+`muse-spark-*`, `qwen*`, `glm-*` and `gpt-5.6-luna` models, and anything else OpenCode Go serves.
+Only the transport changes: `opencode-go/deepseek-v4.1-flash` goes through the gateway, while
+`openai-codex/gpt-6-luna:medium` keeps talking to its own backend and never appears in the jev-omp
+log.
+
+A session that does not go through the gateway says so, because a silent bypass looks exactly like
+a session where Jev had nothing to decide:
+
+- The extension warns once at session start, in the UI, when the session's model is not on
+  `opencode-go`. Print and subagent runs have no UI and stay quiet.
+- When `--model` already names the provider, the launcher prints
+  `jev-omp: routes only the opencode-go provider; this model will use OMP directly.` before `omp`
+  starts, and `jev-omp --status --model <provider>/<model>` prints the same line at any time.
+- Neither blocks the session.
+
+The extension patches the `opencode-go` provider's base URL and nothing else. OMP's
+`registerProvider()` merges the fields it is given, so the provider keeps its own API key, OAuth
+flow, headers, model list, and `compat` settings, and the gateway forwards whichever credential the
+request carried. No routing header is added, and no per-request upstream can be selected: the
+gateway process forwards to one upstream, and `jev-omp` will not reuse a gateway whose upstream
+differs — it stops and tells you to run `jev-omp --stop`.
+
+The wires `opencode-go` uses all land on that same upstream root:
+
+| OMP `model.api` inside `opencode-go` | Gateway path |
+| --- | --- |
+| `openai-completions` | `/v1/chat/completions` |
+| `openai-responses` | `/v1/responses` |
+| `anthropic-messages` | `/v1/messages` |
+
+### Commands and variables
+
+```bash
+jev-omp --model opencode-go/deepseek-v4.1-flash
+jev-omp --gateway-help
+jev-omp --print-config
+jev-omp --status
+jev-omp --dashboard
+jev-omp --start
+jev-omp --stop
+```
+
+Every other `omp` argument is forwarded untouched.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JEV_OMP_PORT` | `8792` | Gateway port for OMP |
+| `JEV_OMP_UPSTREAM_BASE_URL` | `https://opencode.ai/zen/go/v1` | Where routed OMP traffic goes |
+
+### Known limitations
+
+- Only `opencode-go` is routed. Multi-provider routing is not implemented and there is no flag for
+  it: routing a second provider would be a separate change.
+- **`tool_choice` is not declared supported for every model inside `opencode-go`.** OMP 18.2.11's
+  catalog marks `opencode-go/deepseek-v4.1-flash` as `supportsToolChoice=false` and
+  `supportsForcedToolChoice=false`, while `glm-5.3`, `qwen3.7-plus`, and `minimax-m3` are marked
+  `true` for both. The gateway rewrites `tool_choice` regardless, and the real API accepted it for
+  both models tested (see below). If OpenCode Go ever refuses the rewrite with 400 or 422, the
+  gateway fails open: it replays the original request untouched and labels the decision
+  `upstream_rejected_forced`, which costs one extra upstream request. That replay path is covered
+  by unit tests, not by a real rejection.
+- Subscription transports and every other provider (`openai-codex`, `google-antigravity`,
+  `openrouter`, `anthropic`, Gemini/Vertex) stay direct. That is the point of the single-provider
+  design, not an omission.
+- Tool steering depends on OMP sending tool definitions with the request; a request that carries
+  none is passed through unchanged and shows up in the log as a `tools:0` `passthrough` entry with
+  reason `no_tools`. Those entries are not tool decisions.
+
+### What was actually tested
+
+- `pnpm typecheck`, `pnpm test`, `pnpm build`, `npm pack --dry-run`, and `git diff --check` all
+  pass.
+- Unit and integration tests: the extension registers exactly one provider and no headers, a
+  session on another provider is left alone and warns, and the three `opencode-go` wires reach one
+  upstream root.
+- Real OMP 18.2.11 runs against the real OpenCode Go API, through jev-omp gateways started from
+  this checkout, with Jev routing on. Each run was
+  `omp --no-session --extension …/omp-provider.mjs --model <model> -p "<prompt>"` in a scratch
+  directory. The record is each gateway's own log stream: the test gateways ran as isolated
+  instances on their own ports, read directly, not through the shared `~/.jev-gateway/omp.log` that
+  the launchers write and `jev-omp --logs` tails:
+  - `opencode-go/deepseek-v4.1-flash`, "Read hello.txt and reply with only its exact contents." →
+    3 entries for the session — `tools:0` `passthrough`/`no_tools`, `tools:14` `forced` `read` at
+    confidence 0.9, `tools:14` `none` — every one `status:200` and no `upstream_rejected_forced`;
+    the session read the file and answered `alpha-7`.
+  - `opencode-go/glm-5.3`, the same prompt, against a gateway whose log was empty before the run →
+    15 entries, all `status:200`: 2 `forced` (`read` at 0.84, `bash` at 0.92), 10 `none`, 2
+    `passthrough`/`low_confidence`, and 1 `tools:0` `no_tools` entry. Neither forced rewrite
+    produced an `upstream_rejected_forced` entry or an adjacent retry; the session answered
+    `alpha-7`.
+  - So the forced `tool_choice` rewrite is accepted by the real OpenCode Go API for a model OMP
+    marks as not supporting it, and for a model OMP marks as supporting it. Each forced rewrite
+    went upstream exactly once.
+  - Earlier runs against a gateway started before the rebase reached the same outcome for
+    `deepseek-v4.1-flash` (forced `read`, and forced `grep` on a "which file contains beta" prompt)
+    and for `glm-5.3` (forced `read`).
+- `jev-omp --logs` itself, observed against an isolated launcher-managed gateway (its own `HOME` and
+  port, so the shared gateway was untouched). A short real session — `opencode-go/deepseek-v4.1-flash`,
+  "Use the read tool to open hello.txt, then reply with only its exact contents." — printed the same
+  lines in the same shape the isolated instances log, including:
+
+  ```json
+  {"time":"…17:08:24.442Z","event":"route","path":"/v1/chat/completions","model":"deepseek-v4.1-flash","tools":14,"mode":"forced","tool":"read","kind":"function","confidence":0.89,"jev":{"choice":"read","confidence":0.89,"needsTool":0.85,"topProbabilities":{"read":0.9,"no_tool_needed":0.1,"task":0},"inputTokens":5072,"latencyMs":462},"status":200,"durationMs":4440}
+  ```
+
+  followed by a `tools:14` `none` decision, with the session answering `alpha-7`. That is what the
+  command shows for a forced rewrite.
+- The bypass warning, on a real OMP 18.2.11 session: an interactive session started with
+  `--model openai-codex/gpt-6-luna` showed
+  `Warning: jev-omp routes only the opencode-go provider; this model will use OMP directly.` and
+  the session continued normally; `jev-omp --status --model openai-codex/gpt-6-luna` printed
+  `jev-omp: routes only the opencode-go provider; this model will use OMP directly.`
+- A `--model openai-codex/gpt-6-luna` session loaded the extension, ran to completion, and added
+  nothing to the gateway log: the direct path stays direct. `~/.omp/agent/config.yml` was not
+  touched by any of these runs.
+- Test side effect, stated plainly: the runs that were not started with `--no-session` made OMP
+  write their own session transcripts under `~/.omp/agent/sessions/-tmp-jev-omp-realtest`, which
+  OMP does for any session, gateway or not. The extension itself wrote nothing outside the
+  gateway's own `~/.jev-gateway/omp.log`, and the later runs used `--no-session`.
+- Not tested: a real OpenCode Go rejection of the rewrite (the fail-open replay is exercised only
+  by unit tests with a stubbed upstream), `qwen3.7-plus` and `minimax-m3` against the real API, and
+  tool steering on any provider other than `opencode-go` (a real `openai-codex` session was run,
+  but only to confirm it stays direct).
 
 ## Using it with Gemini
 
