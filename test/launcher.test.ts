@@ -16,16 +16,21 @@ interface LauncherSpec {
   args?: (origin: string) => string[];
   env?: (origin: string) => Record<string, string>;
   configHelp: (origin: string) => string;
+  notices?: (origin: string, argv: string[]) => Promise<string[]>;
 }
 
 const opencode = clients.opencode as LauncherSpec;
 const codex = clients.codex as LauncherSpec;
 const claude = clients.claude as LauncherSpec;
+const gemini = clients.gemini as LauncherSpec;
+const omp = clients.omp as LauncherSpec;
 
 const origin = "http://127.0.0.1:8791";
+const ompOrigin = "http://127.0.0.1:8792";
 const launcherBin = fileURLToPath(new URL("../bin/jev-opencode.mjs", import.meta.url));
+const ompLauncherBin = fileURLToPath(new URL("../bin/jev-omp.mjs", import.meta.url));
 
-const managedEnv = ["OPENCODE_CONFIG_CONTENT", "JEV_OPENCODE_UPSTREAM_BASE_URL", "JEV_OPENCODE_MODEL", "JEV_CODEX_UPSTREAM_BASE_URL", "JEV_CLAUDE_UPSTREAM_BASE_URL", "CODEX_HOME"] as const;
+const managedEnv = ["OPENCODE_CONFIG_CONTENT", "JEV_OPENCODE_UPSTREAM_BASE_URL", "JEV_OPENCODE_MODEL", "JEV_CODEX_UPSTREAM_BASE_URL", "JEV_CLAUDE_UPSTREAM_BASE_URL", "JEV_OMP_UPSTREAM_BASE_URL", "JEV_OMP_GATEWAY_BASE_URL", "CODEX_HOME"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -131,6 +136,87 @@ describe("jev-opencode spec", () => {
     const jsonBlock = help.slice(help.indexOf("{"), help.lastIndexOf("}") + 1);
     expect(() => JSON.parse(jsonBlock)).not.toThrow();
     expect((JSON.parse(jsonBlock) as any).model).toBe("jev-gateway/o'brien");
+  });
+});
+
+describe("jev-omp spec", () => {
+  it("identifies itself as the OMP launcher on a unique port", () => {
+    expect(omp.name).toBe("jev-omp");
+    expect(omp.client).toBe("omp");
+    expect(omp.portEnv).toBe("JEV_OMP_PORT");
+    expect(omp.defaultPort).toBe(8792);
+    expect([codex.defaultPort, claude.defaultPort, opencode.defaultPort, gemini.defaultPort]).not.toContain(omp.defaultPort);
+  });
+
+  it("fixes the gateway upstream to the OpenCode Go API", () => {
+    expect(omp.upstream()).toBe("https://opencode.ai/zen/go/v1");
+    process.env.JEV_OMP_UPSTREAM_BASE_URL = "https://llm.test/v1";
+    expect(omp.upstream()).toBe("https://llm.test/v1");
+    expect(omp.upstreamHelp).toContain("JEV_OMP_UPSTREAM_BASE_URL");
+  });
+
+  it("loads the bundled OMP extension without touching user configuration", () => {
+    const args = omp.args?.(ompOrigin);
+    expect(args).toEqual(["--extension", expect.stringMatching(/omp-provider\.mjs$/)]);
+    expect(args?.join(" ")).not.toContain("models.yml");
+    expect(args?.join(" ")).not.toContain("~/.omp");
+  });
+
+  it("hands the extension the gateway root and nothing else", () => {
+    // No provider selector, no upstream, and no route capability: opencode-go is the only
+    // routed provider and the gateway already knows its own single upstream.
+    expect(omp.env?.(ompOrigin)).toEqual({ JEV_OMP_GATEWAY_BASE_URL: `${ompOrigin}/v1` });
+  });
+
+  it("says out loud when --model already names a provider the gateway does not route", async () => {
+    const routed = await omp.notices?.(ompOrigin, ["--model", "opencode-go/glm-5.3"]);
+    expect(routed).toEqual([]);
+
+    const direct = (await omp.notices?.(ompOrigin, ["--model=openai-codex/gpt-6-luna"])) ?? [];
+    expect(direct).toHaveLength(1);
+    expect(direct[0]).toContain("routes only the opencode-go provider");
+    // launcher.mjs prefixes the first notice with the launcher name, so the line must not repeat it.
+    expect(direct[0]).not.toMatch(/^jev-omp/);
+
+    // A bare model name names no provider; only the extension sees the resolved one.
+    expect(await omp.notices?.(ompOrigin, ["--model", "luna"])).toEqual([]);
+    expect(await omp.notices?.(ompOrigin, ["-p", "hello"])).toEqual([]);
+  });
+
+  it("prints process-local wiring help rooted at the gateway", () => {
+    const help = omp.configHelp(ompOrigin);
+    expect(help).toContain("jev-omp --start");
+    expect(help).toContain(`${ompOrigin}/v1`);
+    expect(help).toContain("JEV_OMP_GATEWAY_BASE_URL");
+    expect(help).toContain("omp-provider.mjs");
+    expect(help).not.toContain("models.yml");
+  });
+});
+
+describe("jev-omp entrypoint", () => {
+  it("is registered in package.json with a runnable script", () => {
+    // JSON.parse is untyped; the manifest fields asserted below are the whole surface used here.
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+      bin: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    expect(pkg.bin["jev-omp"]).toBe("bin/jev-omp.mjs");
+    expect(pkg.scripts.omp).toBe("node bin/jev-omp.mjs");
+  });
+
+  it("--gateway-help describes the OMP launcher without starting anything", () => {
+    const out = execFileSync(process.execPath, [ompLauncherBin, "--gateway-help"], { encoding: "utf8", timeout: 30_000 });
+    expect(out).toContain("jev-omp: omp with tool selection routed through Jev");
+    expect(out).toContain("JEV_OMP_PORT");
+    expect(out).toContain("JEV_OMP_UPSTREAM_BASE_URL");
+  });
+
+  it("--print-config shows the process-local extension command without starting anything", () => {
+    const out = execFileSync(process.execPath, [ompLauncherBin, "--print-config"], { encoding: "utf8", timeout: 30_000 });
+    expect(out).toContain("http://127.0.0.1:8792/v1");
+    expect(out).toContain("omp --extension");
+    expect(out).toContain("omp-provider.mjs");
+    expect(out).not.toContain("ROUTE_TOKEN");
   });
 });
 
